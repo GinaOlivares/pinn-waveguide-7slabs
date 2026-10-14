@@ -91,10 +91,24 @@ with model_tab:
     st.dataframe(pd.DataFrame(cutoff_table(geometry),columns=['Mode','Cutoff Hz']),hide_index=True)
     st.caption('Open higher-order channels are not automatically excited. Model injects TE10 only.')
     fig=go.Figure()
+    # Real traces establish axis limits; shapes alone can be omitted by Plotly.
+    fig.add_trace(go.Scatter(x=[0,geometry.length*1e3],y=[0,0],
+                             mode='lines',line={'color':'#657987','width':2},
+                             name='Air-filled guide',hoverinfo='skip'))
     for j,(a,b) in enumerate(geometry.slabs):
-        fig.add_vrect(x0=a*1e3,x1=b*1e3,fillcolor='teal',opacity=.5,line_width=0)
-        fig.add_annotation(x=(a+b)*500,y=.5,text=str(j+1),showarrow=False)
-    fig.update_layout(xaxis_title='x propagation (mm)',yaxis={'visible':False,'range':[0,1]},height=180)
+        x0,x1=a*1e3,b*1e3
+        fig.add_trace(go.Scatter(x=[x0,x1,x1,x0,x0],y=[-.35,-.35,.35,.35,-.35],
+                                 fill='toself',fillcolor='#127c86',mode='lines',
+                                 line={'color':'#0a5660','width':1},name=f'Slab {j+1}',
+                                 hovertemplate=f'Slab {j+1}<br>x: {x0:.3f}–{x1:.3f} mm<br>Thickness: {geometry.thickness*1e3:.3f} mm<extra></extra>',
+                                 showlegend=False))
+        fig.add_annotation(x=(a+b)*500,y=.55,text=str(j+1),showarrow=False)
+    for x,label in [(0,'Port 1'),(geometry.length*1e3,'Port 2')]:
+        fig.add_annotation(x=x,y=-.65,text=label,showarrow=False)
+    fig.update_layout(title='Seven slabs along the propagation direction',
+                      xaxis={'title':'x propagation (mm)','range':[-5,geometry.length*1e3+5]},
+                      yaxis={'visible':False,'range':[-1,1]},height=270,
+                      template='plotly_white',showlegend=False,margin={'l':20,'r':20,'t':55,'b':55})
     st.plotly_chart(fig,width='stretch')
     try:
         ff=np.linspace(low*1e9,high*1e9,201)
@@ -105,6 +119,21 @@ with model_tab:
         draw([(k,ff/1e9,abs(sm[:,i,j]),'solid') for k,i,j in [('S11',0,0),('S21',1,0)]],'Theoretical magnitudes','|S|')
         draw([(k,ff/1e9,np.rad2deg(np.angle(sm[:,i,j])),'solid') for k,i,j in [('S11',0,0),('S21',1,0)]],'Theoretical wrapped phases','Phase (deg)')
         draw([(k,ff/1e9,v,'solid') for k,v in [('R',nominal.R),('T',nominal.T),('A',nominal.A)]],'Theoretical powers','Power fraction')
+        selected_f=st.slider('Field frequency (GHz)',min_value=float(low),max_value=float(high),value=float((low+high)/2),step=.001)
+        field_result=solve(geometry,[selected_f*1e9],complex(ep,loss))
+        xx=np.unique(np.r_[np.linspace(0,geometry.length,2500),geometry.edges])
+        psi,_=field_result.field(xx)
+        field_fig=go.Figure()
+        for label,values in [('Re psi',psi.real),('Im psi',psi.imag),('|psi|',abs(psi))]:
+            field_fig.add_trace(go.Scatter(x=xx*1e3,y=values,name=label,mode='lines'))
+        for a,b in geometry.slabs:
+            field_fig.add_vrect(x0=a*1e3,x1=b*1e3,fillcolor='teal',opacity=.12,line_width=0)
+        field_fig.update_layout(title=f'TE10 electric field along x at {selected_f:.3f} GHz',
+                                xaxis={'title':'x propagation (mm)','range':[0,geometry.length*1e3]},
+                                yaxis_title='Electric amplitude (V/m)',template='plotly_white',height=400)
+        st.plotly_chart(field_fig,width='stretch')
+        st.caption('Model field: Ez = psi(x) sin(pi y / width). Incident electric amplitude = 1 V/m. Shading marks the seven slabs; calibration offsets do not alter this internal field.')
+
     except (ValueError,ArithmeticError) as exc: st.error(str(exc))
 
 comparison=None
