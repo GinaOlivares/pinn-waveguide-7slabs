@@ -11,7 +11,14 @@ import streamlit as st
 from waveguide import Geometry,solve,cutoff_table
 from waveguide.experimental import read_ms46122b
 from waveguide.antennas import AntennaCoupling
-from waveguide.comparison import ReferencePlanes,compare_experiment,shift_reference_planes
+# Streamlit can retain imported modules across source updates.
+# Reload the small comparison module before binding its public functions.
+import importlib
+import waveguide.comparison as comparison_module
+comparison_module=importlib.reload(comparison_module)
+ReferencePlanes=comparison_module.ReferencePlanes
+compare_experiment=comparison_module.compare_experiment
+shift_reference_planes=comparison_module.shift_reference_planes
 
 st.set_page_config(page_title='Seven-slab waveguide | Experimental validation',layout='wide')
 st.title('Seven-slab waveguide · Experimental validation')
@@ -154,7 +161,7 @@ with compare_tab:
     else:
         pc={'Unconfirmed':'unconfirmed','exp(-iωt)':'negative_time','exp(+iωt)':'positive_time'}[phase_choice]
         try:
-            comparison=compare_experiment(data,geometry,complex(ep,loss),refs,pc,low*1e9,high*1e9,antennas=antennas)
+            comparison=compare_experiment(data,geometry,complex(ep,loss),refs,pc,low*1e9,high*1e9,**({'antennas':antennas} if antennas is not None else {}))
             st.warning(comparison['metrics']['phase_comparison_status']) if not refs.confirmed or pc=='unconfirmed' else st.success(comparison['metrics']['phase_comparison_status'])
             f=comparison['frequency']/1e9
             for k in ('S11','S21'):
@@ -227,7 +234,7 @@ if checkpoint_file is not None and data is not None:
                 for parameter in network.parameters(): parameter.requires_grad_(False)
                 networks.append(network)
             ensemble={'config':config,'grid_GHz':np.linspace(*config.frequency_range_GHz,config.frequency_points),'models':networks}
-            measured=inverse_power_data(data,low*1e9,high*1e9,antennas=antennas)
+            measured=inverse_power_data(data,low*1e9,high*1e9,**({'antennas':antennas} if antennas is not None else {}))
             predictions=predict_ensemble(ensemble,measured)
             st.dataframe(pd.DataFrame(predictions,columns=['epsilon real before','epsilon loss before']))
             with st.spinner('Refining material only on original measured frequencies…'):

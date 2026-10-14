@@ -15,7 +15,7 @@ def build_inverse_figures(data, geometry, inverse, predictions, references=None,
     """
     def compare(eps):
         return compare_experiment(data,geometry,complex(*eps),references,
-                                  experimental_convention,low_hz,high_hz,antennas=antennas)
+                                  experimental_convention,low_hz,high_hz,**({'antennas':antennas} if antennas is not None else {}))
     refined=compare(inverse['best']['epsilon'])
     before=[compare(eps) for eps in predictions]
     frequency=refined['frequency']/1e9
