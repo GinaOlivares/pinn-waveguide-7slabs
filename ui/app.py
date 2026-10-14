@@ -15,7 +15,7 @@ from waveguide.comparison import ReferencePlanes,compare_experiment,shift_refere
 
 st.set_page_config(page_title='Seven-slab waveguide | Experimental validation',layout='wide')
 st.title('Seven-slab waveguide · Experimental validation')
-st.caption('TE10 · PEC · x propagation / y width / z height · no training or parameter fitting')
+st.caption('TE10 · PEC · x propagation / y width / z height · forward comparison and optional material refinement')
 with st.sidebar:
     st.header('Model configuration')
     st.caption('Prior configured dimensions; confirm against the experimental fixture.')
