@@ -2,7 +2,7 @@
 import sys
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src'))
-import io,json,zipfile
+import io,json,zipfile,hashlib
 from dataclasses import asdict
 import numpy as np
 import pandas as pd
@@ -10,6 +10,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from waveguide import Geometry,solve,cutoff_table
 from waveguide.experimental import read_ms46122b
+from waveguide.antennas import AntennaCoupling
 from waveguide.comparison import ReferencePlanes,compare_experiment,shift_reference_planes
 
 st.set_page_config(page_title='Seven-slab waveguide | Experimental validation',layout='wide')
@@ -42,6 +43,15 @@ with st.sidebar:
         confirmed=st.checkbox('These lengths match the calibration planes',value=False)
         refs=ReferencePlanes(dl*1e-3,dr*1e-3,confirmed)
     else: refs=ReferencePlanes()
+    antenna_enabled=st.checkbox('Include antenna coupling',value=False)
+    antennas=None
+    if antenna_enabled:
+        st.caption('Matched effective coupling; fixed during inversion. Enter independently calibrated values. Zero values give ideal ports. Antenna reflections are excluded.')
+        al=st.number_input('Antenna 1 one-way loss (dB)',min_value=0.,max_value=100.,value=0.)
+        ar=st.number_input('Antenna 2 one-way loss (dB)',min_value=0.,max_value=100.,value=0.)
+        tl=st.number_input('Antenna 1 delay (ns)',min_value=0.,value=0.)
+        tr=st.number_input('Antenna 2 delay (ns)',min_value=0.,value=0.)
+        antennas=AntennaCoupling(al,ar,tl*1e-9,tr*1e-9)
 
 try:
     geometry=Geometry(width*1e-3,height*1e-3,d*1e-3,spacing*1e-3,left*1e-3,right*1e-3,convention)
@@ -116,6 +126,8 @@ with model_tab:
         sm=nominal.s_matrix
         if refs.left_air_extension is not None:
             sm=shift_reference_planes(sm,nominal.beta[:,0],refs.left_air_extension,refs.right_air_extension)
+        if antennas is not None:
+            sm=antennas.apply(sm,ff)
         draw([(k,ff/1e9,abs(sm[:,i,j]),'solid') for k,i,j in [('S11',0,0),('S21',1,0)]],'Theoretical magnitudes','|S|')
         draw([(k,ff/1e9,np.rad2deg(np.angle(sm[:,i,j])),'solid') for k,i,j in [('S11',0,0),('S21',1,0)]],'Theoretical wrapped phases','Phase (deg)')
         draw([(k,ff/1e9,v,'solid') for k,v in [('R',nominal.R),('T',nominal.T),('A',nominal.A)]],'Theoretical powers','Power fraction')
@@ -142,7 +154,7 @@ with compare_tab:
     else:
         pc={'Unconfirmed':'unconfirmed','exp(-iωt)':'negative_time','exp(+iωt)':'positive_time'}[phase_choice]
         try:
-            comparison=compare_experiment(data,geometry,complex(ep,loss),refs,pc,low*1e9,high*1e9)
+            comparison=compare_experiment(data,geometry,complex(ep,loss),refs,pc,low*1e9,high*1e9,antennas=antennas)
             st.warning(comparison['metrics']['phase_comparison_status']) if not refs.confirmed or pc=='unconfirmed' else st.success(comparison['metrics']['phase_comparison_status'])
             f=comparison['frequency']/1e9
             for k in ('S11','S21'):
@@ -170,6 +182,7 @@ with export_tab:
         st.download_button('Download untouched original export',data.original_bytes,file_name=Path(data.source).name,mime='text/plain')
     if data is not None and comparison is not None:
         report={'geometry_SI':asdict(geometry),'epsilon_hypothesis':[ep,loss],
+                'antenna_coupling':asdict(antennas) if antennas else None,
                 'references_SI':asdict(refs),'experimental_convention':phase_choice,
                 'original_sha256':data.sha256,'metrics':comparison['metrics'],
                 'selected_diagnostics':data.diagnostics(comparison['mask'])}
@@ -191,6 +204,7 @@ st.caption('Reuse a synthetically trained ensemble; no training on the measureme
 checkpoint_file=st.file_uploader('Trusted ensemble checkpoint from this project (.pt)',type=['pt'],key='experimental_inverse_checkpoint')
 st.caption('Use inverse_ensemble.pt exported by the audit/refinement Colab notebook. This reader uses safe weights-only loading.')
 if checkpoint_file is not None and data is not None:
+    inverse_context=hashlib.sha256((data.sha256+hashlib.sha256(checkpoint_file.getvalue()).hexdigest()+json.dumps({'geometry':asdict(geometry),'band':[low,high],'antennas':asdict(antennas) if antennas else None},sort_keys=True)).encode()).hexdigest()
     if st.button('Predict epsilon and refine measured R/T'):
         try:
             import torch
@@ -213,15 +227,36 @@ if checkpoint_file is not None and data is not None:
                 for parameter in network.parameters(): parameter.requires_grad_(False)
                 networks.append(network)
             ensemble={'config':config,'grid_GHz':np.linspace(*config.frequency_range_GHz,config.frequency_points),'models':networks}
-            measured=inverse_power_data(data,low*1e9,high*1e9)
+            measured=inverse_power_data(data,low*1e9,high*1e9,antennas=antennas)
             predictions=predict_ensemble(ensemble,measured)
             st.dataframe(pd.DataFrame(predictions,columns=['epsilon real before','epsilon loss before']))
             with st.spinner('Refining material only on original measured frequencies…'):
                 inverse=refine_material(geometry,measured,predictions,
                                        bounds=(config.epsilon_range,config.loss_range),extra_starts=12,maxiter=200)
-            st.dataframe(pd.DataFrame([{k:v for k,v in c.items() if k!='objective_history'} for c in inverse['candidates']]))
-            st.json(inverse['best'])
-            st.warning('Power-only experimental estimate: phase was not used. Negative apparent absorption was preserved. A low residual alone does not establish material recovery or uniqueness.')
-            st.download_button('Download experimental inverse results',json.dumps(inverse,indent=2),file_name='experimental_inverse_results.json')
+            inverse['antenna_coupling']=asdict(antennas) if antennas else None
+            inverse['fit_domain']='sample-plane powers after fixed antenna de-embedding' if antennas else 'raw measured powers'
+            st.session_state['experimental_inverse_result']={'context':inverse_context,'inverse':inverse,'predictions':predictions.tolist()}
         except Exception as exc:
             st.error(f'Experimental inversion unavailable: {exc}')
+
+    cached=st.session_state.get('experimental_inverse_result')
+    if cached is not None and cached['context']==inverse_context:
+        from waveguide.inverse_plots import build_inverse_figures
+        inverse=cached['inverse']
+        st.dataframe(pd.DataFrame([{k:v for k,v in c.items() if k!='objective_history'} for c in inverse['candidates']]))
+        st.json(inverse['best'])
+        st.warning('Power-only estimate: phase was not fitted. Negative apparent absorption is preserved. A low residual does not establish uniqueness or material recovery.')
+        pc={'Unconfirmed':'unconfirmed','exp(-iωt)':'negative_time','exp(+iωt)':'positive_time'}[phase_choice]
+        figures,plot_metrics=build_inverse_figures(data,geometry,inverse,cached['predictions'],refs,pc,low*1e9,high*1e9,antennas)
+        st.subheader('Inverse fit: measured vs predicted spectra')
+        st.caption('Original measured planes: fixed antenna coupling and reference shifts are applied to the model. All neural initializations are shown separately.')
+        for key in ('R','T','Apparent A','S11_magnitude','S21_magnitude','S11_phase','S21_phase','residuals'):
+            st.plotly_chart(figures[key],width='stretch',key='inverse_plot_'+key)
+        st.warning(plot_metrics['phase_comparison_status']) if not refs.confirmed or pc=='unconfirmed' else st.info(plot_metrics['phase_comparison_status'])
+        st.caption('Phase plots are diagnostic only; phase did not enter the R/T refinement objective.')
+        st.json(plot_metrics)
+        report=dict(inverse); report['measured_plane_comparison']=plot_metrics
+        st.download_button('Download experimental inverse results',json.dumps(report,indent=2),file_name='experimental_inverse_results.json')
+        st.download_button('Download inverse comparison graphs', '\n'.join(fig.to_html(full_html=False,include_plotlyjs='cdn' if i==0 else False) for i,fig in enumerate(figures.values())),file_name='experimental_inverse_graphs.html',mime='text/html')
+    elif cached is not None:
+        st.info('Measurement, geometry, band or checkpoint changed. Run prediction again to display a matching inverse fit.')

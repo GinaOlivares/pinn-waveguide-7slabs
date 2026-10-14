@@ -130,7 +130,7 @@ def read_ms46122b(source: str | Path | bytes, source_name='uploaded.txt') -> Exp
     return ExperimentalData(name,content,headers,columns,values,frequency,magnitudes,phases,parameters,mapping)
 
 
-def inverse_power_data(data: ExperimentalData, low_hz=16e9, high_hz=18e9):
+def inverse_power_data(data: ExperimentalData, low_hz=16e9, high_hz=18e9, antennas=None):
     """Adapter for the existing inverse workflow; keeps measured anomalies.
 
     No phase is invented. Original complex observations remain in data.
@@ -142,4 +142,6 @@ def inverse_power_data(data: ExperimentalData, low_hz=16e9, high_hz=18e9):
         raise ValueError('At least ten measured frequencies required for inversion')
     measured = np.column_stack((abs(data.parameters['S11'][mask])**2,
                                abs(data.parameters['S21'][mask])**2))
+    if antennas is not None:
+        measured = measured / antennas.power_weights(data.frequency[mask])
     return PowerData(data.frequency[mask].copy(), measured, 0., data.source)

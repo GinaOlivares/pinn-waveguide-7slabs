@@ -36,7 +36,7 @@ def shift_reference_planes(s_matrix, beta_air, left_m, right_m):
 
 def compare_experiment(data: ExperimentalData, geometry: Geometry, epsilon: complex,
                        references=None, experimental_convention='unconfirmed',
-                       low_hz=16e9, high_hz=18e9, phase_min_magnitude=1e-4):
+                       low_hz=16e9, high_hz=18e9, phase_min_magnitude=1e-4, antennas=None):
     """Complex data kept, without parameter fitting or automatic phase alignment.
 
     unconfirmed compares raw exported phasors provisionally. positive_time
@@ -55,6 +55,8 @@ def compare_experiment(data: ExperimentalData, geometry: Geometry, epsilon: comp
         model = shift_reference_planes(model,result.beta[:,0],refs.left_air_extension,refs.right_air_extension)
     elif refs.left_air_extension is not None or refs.right_air_extension is not None:
         raise ValueError('Provide both reference offsets or neither')
+    if antennas is not None:
+        model = antennas.apply(model, frequency)
     observed = {k:v[mask].copy() for k,v in data.parameters.items()}
     if experimental_convention == 'positive_time':
         observed = {k:np.conj(v) for k,v in observed.items()}
@@ -62,6 +64,7 @@ def compare_experiment(data: ExperimentalData, geometry: Geometry, epsilon: comp
                         'S21':model[:,1,0],'S22':model[:,1,1]}
     verified = refs.confirmed and experimental_convention != 'unconfirmed'
     metrics = {'phase_comparison_status':'reference/convention confirmed by user' if verified else 'PROVISIONAL: reference planes or convention unconfirmed',
+               'antenna_coupling_applied':antennas is not None,
                'parameters_fitted':False,'reference_shift_applied':applied,
                'frequency_points':len(frequency)}
     for key in ('S11','S21'):
